@@ -1,1 +1,5 @@
 /.metadata/
+*_TAD_logs/
+frdmrw612_wifi_webconfig/Debug/
+frdmrw612_wifi_webconfig/*.launch
+**/.settings/
