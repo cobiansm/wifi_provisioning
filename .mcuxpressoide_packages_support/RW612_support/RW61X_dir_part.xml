@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chips chipVendor="NXP"
+       family="RW61X"
+       vendorURL="http://www.nxp.com"
+       chipURL="">
+   <chip name="RW612"
+         displayName="RW612"
+         xml_file="RW612_internal.xml"
+         chipURL=""/>
+</chips>
