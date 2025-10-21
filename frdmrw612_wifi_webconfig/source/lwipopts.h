@@ -234,7 +234,7 @@ void sys_mark_tcpip_thread(void);
  * MEMP_NUM_SYS_TIMEOUT: the number of simulateously active timeouts.
  * (requires NO_SYS==0)
  */
-#define MEMP_NUM_SYS_TIMEOUT 12
+#define MEMP_NUM_SYS_TIMEOUT 17
 
 /**
  * MEMP_NUM_NETBUF: the number of struct netbufs.
@@ -397,6 +397,10 @@ void sys_mark_tcpip_thread(void);
 /**
  * DNS related options, revisit later to fine tune.
  */
+#define LWIP_MDNS_RESPONDER 1
+#define LWIP_NUM_NETIF_CLIENT_DATA (LWIP_MDNS_RESPONDER)
+
+
 #define LWIP_DNS            1
 #define DNS_TABLE_SIZE      2  // number of table entries, default 4
 #define DNS_MAX_NAME_LENGTH 64 // max. name length, default 256

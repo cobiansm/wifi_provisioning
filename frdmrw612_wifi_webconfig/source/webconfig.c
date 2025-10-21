@@ -23,6 +23,15 @@
 #include <stdio.h>
 
 #include "FreeRTOS.h"
+#include "lwip/api.h"
+#include "lwip/apps/mdns.h"
+#include "lwip/netif.h"
+#include "wm_net.h"
+#include "fsl_reset.h"
+
+#include <stdio.h>
+
+#include "FreeRTOS.h"
 
 /*******************************************************************************
  * Prototypes
@@ -35,6 +44,18 @@ static uint32_t CleanUpClient();
 /*******************************************************************************
  * Definitions
  ******************************************************************************/
+
+#ifndef AP_SSID
+#define AP_SSID "my_network"
+#endif
+
+#ifndef AP_PASSWORD
+#define AP_PASSWORD "my_password"
+#endif
+
+#define TCP_PORT 10001
+#define DEVICE_NAME "low_level_microcontroller"
+
 typedef enum board_wifi_states
 {
     WIFI_STATE_CLIENT,
@@ -79,6 +100,65 @@ static void LinkStatusChangeCallback(bool linkState)
     }
 }
 
+static void tcp_wait_for_credentials(void *arg)
+{
+    int server_fd, client_fd;
+    struct sockaddr_in server, client;
+    socklen_t client_len = sizeof(client);
+    char buffer[128];
+
+    /* Create TCP socket */
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        PRINTF("[!] Error creating TCP socket\r\n");
+        vTaskDelete(NULL);
+    }
+
+    /* Bind on port 10001 */
+    server.sin_family = AF_INET;
+    server.sin_port = PP_HTONS(TCP_PORT);
+    server.sin_addr.s_addr = PP_HTONL(INADDR_ANY);
+
+    if (bind(server_fd, (struct sockaddr *)&server, sizeof(server)) < 0) {
+        PRINTF("[!] Error in bind()\r\n");
+        closesocket(server_fd);
+        vTaskDelete(NULL);
+    }
+
+    listen(server_fd, 1);
+    PRINTF("Waiting for credentials %d...\r\n", TCP_PORT);
+
+    client_fd = accept(server_fd, (struct sockaddr *)&client, &client_len);
+    PRINTF("[✔] Client connected\r\n");
+
+    /* SSID & PASSWORD */
+    int len = recv(client_fd, buffer, sizeof(buffer)-1, 0);
+    buffer[len] = '\0';
+    PRINTF("Received: %s\r\n", buffer);
+
+    char *ssid = strtok(buffer, ",");
+    char *password = strtok(NULL, ",");
+
+    if (ssid && password) {
+        PRINTF("SSID = %s | password = %s\r\n", ssid, password);
+
+        /* Save in Flash */
+        save_wifi_credentials(CONNECTION_INFO_FILENAME, ssid, password, "WPA2");
+        send(client_fd, "Stored. Rebooting...\n", 26, 0);
+
+        /* reset */
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        NVIC_SystemReset();
+    } else {
+        PRINTF("[!] Invalid format\r\n");
+        send(client_fd, "ERROR\r\n", 7, 0);
+    }
+
+    closesocket(client_fd);
+    closesocket(server_fd);
+    vTaskDelete(NULL);
+}
+
 /*!
  * @brief The main task function
  */
@@ -109,7 +189,7 @@ static void main_task(void *arg)
     {
         /* Credentials from last time have been found. The board will attempt to
          * connect to this network as a client */
-        WC_DEBUG("[i] Saved SSID: %s, Password: %s, Security: %s\r\n", ssid, password, security);
+        WC_DEBUG("[i] Saved SSID: %s, password: %s, Security: %s\r\n", ssid, password, security);
         g_BoardState.wifiState = WIFI_STATE_CLIENT;
         strcpy(g_BoardState.ssid, ssid);
         strcpy(g_BoardState.password, password);
@@ -146,7 +226,7 @@ static void main_task(void *arg)
     WC_DEBUG("[i] Successfully initialized Wi-Fi module\r\n");
 
     /* Start WebServer
-    if (xTaskCreate(http_srv_task, "http_srv_task", HTTPD_STACKSIZE, NULL, HTTPD_PRIORITY, NULL) != pdPASS)
+    if (xTaskCreate(http_srv_task, "http_srv_task", HTTPD_STACKSIZE, NULL, HTTPD_PRIORITY, NULL) != pdpassword)
     {
         PRINTF("[!] HTTPD Task creation failed.");
         while (1)
@@ -180,6 +260,120 @@ static void main_task(void *arg)
                 CleanUpAP();
         }
     }
+}
+
+static void flash_task(void *arg)
+{
+    uint32_t result = 0;
+
+    char ssid[WPL_WIFI_SSID_LENGTH];
+	char password[WPL_WIFI_PASSWORD_LENGTH];
+	char security[WIFI_SECURITY_LENGTH];
+
+    PRINTF("\r\n************************************************\r\n");
+    PRINTF(" Wi-Fi provisioning + MQTT client example\r\n");
+    PRINTF("************************************************\r\n");
+
+    init_flash_storage(CONNECTION_INFO_FILENAME);
+
+    if (get_saved_wifi_credentials(CONNECTION_INFO_FILENAME, ssid, password, security) == 0 && strcmp(ssid, "") != 0)
+    {
+		PRINTF("[✔] Found saved credentials. Connecting to Wi-Fi...\r\n");
+		PRINTF("     SSID: %s | PASS: %s | SEC: %s\r\n", ssid, password, security);
+
+		/* Initialize Wi-Fi board */
+		result = WPL_Init();
+		PRINTF("[i] Initializing Wi-Fi connection... \r\n");
+
+		if (result != WPLRET_SUCCESS)
+		{
+		   PRINTF("[!] WPL Init failed: %d\r\n", (uint32_t)result);
+		   __BKPT(0);
+		}
+
+		result = WPL_Start(LinkStatusChangeCallback);
+		if (result != WPLRET_SUCCESS)
+		{
+		   PRINTF("[!] WPL Start failed %d\r\n", (uint32_t)result);
+		   __BKPT(0);
+		}
+
+		PRINTF("[✔] Successfully initialized Wi-Fi module\r\n");
+
+		WPL_AddNetwork(ssid, password, WIFI_NETWORK_LABEL);
+		WPL_Join(WIFI_NETWORK_LABEL);
+
+		 if (result == WPLRET_SUCCESS)
+		 {
+			PRINTF("[✔] Connected to Wi-Fi!\r\n");
+			char ip[16];
+			WPL_GetIP(ip, 1);
+			PRINTF("[i] Device IP: %s\r\n", ip);
+		 } else {
+			PRINTF("[!] Failed to connect. Reset flash and try AP mode.\r\n");
+		}
+		/* Once connected, start MQTT client */
+		//mqtt_freertos_run_thread(netif_default);
+		vTaskDelete(NULL);
+	}
+
+	PRINTF("[i] No credentials found. Starting SoftAP for provisioning.\r\n");
+
+	result = WPL_Init();
+	if (result != WPLRET_SUCCESS) {
+		PRINTF("[!] WPL_Init failed %d\r\n", result);
+		__BKPT(0);
+	}
+
+	result = WPL_Start(LinkStatusChangeCallback);
+	if (result != WPLRET_SUCCESS) {
+		PRINTF("[!] WPL_Start failed %d\r\n", result);
+		__BKPT(0);
+	}
+
+	PRINTF("[✔] Wi-Fi module initialized in AP mode\r\n");
+
+	/* Initialize Soft AP */
+    PRINTF("[i] Starting Wi-Fi Access Point\r\n");
+    int err;
+    err = WPL_Start_AP(AP_SSID, AP_PASSWORD, 1);
+    if (err != WPLRET_SUCCESS)
+    {
+		PRINTF("[!] WPL_Start_AP: Failed, error: %d\r\n", (uint32_t)err);
+		while (true);
+    }
+    else {
+    	PRINTF("[i] Wi-Fi AP interface up, DHCP server running.\r\n");
+    }
+
+    PRINTF("[✔] AP up: SSID='%s', password='%s'\r\n", AP_SSID, AP_PASSWORD);
+
+    char ap_ip[16];
+    do {
+        WPL_GetIP(ap_ip, 0);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+    } while(strcmp(ap_ip, "0.0.0.0") == 0);
+
+    PRINTF("[i] AP IP ready: %s\r\n", ap_ip);
+
+    /* Start mDNS */
+    LOCK_TCPIP_CORE();
+    mdns_resp_init();
+    mdns_resp_add_netif(net_get_uap_handle(), DEVICE_NAME);
+    mdns_resp_add_service(net_get_uap_handle(), DEVICE_NAME, "_provision",
+                          DNSSD_PROTO_TCP, TCP_PORT, NULL, NULL);
+    UNLOCK_TCPIP_CORE();
+    PRINTF("[mDNS] Service announced as %s._provision._tcp.local\r\n", DEVICE_NAME);
+
+    /* TCP Server */
+    xTaskCreate(tcp_wait_for_credentials, "tcp_server", 2048, NULL, 3, NULL);
+
+
+    //ConnectTo();
+    /// wait_dns
+    //mqtt_freertos_run_thread(netif_default);
+
+    //vTaskDelete(NULL);
 }
 
 /* Initialize and start local AP */
@@ -336,7 +530,7 @@ int main(void)
     BOARD_InitHardware();
 
     /* Create the main Task */
-    if (xTaskCreate(main_task, "main_task", 2048, NULL, configMAX_PRIORITIES - 4, &g_BoardState.mainTask) != pdPASS)
+    if (xTaskCreate(flash_task, "main_task", 2048, NULL, configMAX_PRIORITIES - 4, &g_BoardState.mainTask) != pdPASS)
     {
         PRINTF("[!] MAIN Task creation failed!\r\n");
         while (1)
