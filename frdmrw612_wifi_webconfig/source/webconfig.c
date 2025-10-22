@@ -311,7 +311,10 @@ static void flash_task(void *arg)
 			WPL_Join(WIFI_NETWORK_LABEL);
 			PRINTF("[i] Joined Wi-Fi \r\n");
 
+			PRINTF("[i] Before mqtt thread \r\n");
 			mqtt_freertos_run_thread(netif_default);
+
+			vTaskDelete(NULL);
 		}
 	} else {
 		/* Initialize Wi-Fi board */
