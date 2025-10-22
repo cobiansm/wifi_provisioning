@@ -15,7 +15,7 @@
 #include "app.h"
 #include "wpl.h"
 #include "timers.h"
-
+#include "wifi.h"
 #include "fsl_debug_console.h"
 #include "webconfig.h"
 #include "cred_flash_storage.h"
@@ -29,10 +29,6 @@
 #include "lwip/netif.h"
 #include "wm_net.h"
 #include "fsl_reset.h"
-
-#include <stdio.h>
-
-#include "FreeRTOS.h"
 
 /*******************************************************************************
  * Prototypes
@@ -56,6 +52,8 @@ static uint32_t CleanUpClient();
 
 #define TCP_PORT 10001
 #define DEVICE_NAME "low_level_microcontroller"
+
+extern int wifi_set_country_code(const char *alpha2);
 
 typedef enum board_wifi_states
 {
@@ -297,6 +295,7 @@ static void flash_task(void *arg)
 		   __BKPT(0);
 		}
 
+		//wifi_set_country_code("WW");
 		result = WPL_Start(LinkStatusChangeCallback);
 		if (result != WPLRET_SUCCESS)
 		{
@@ -305,17 +304,59 @@ static void flash_task(void *arg)
 		}
 
 		PRINTF("[i] Successfully initialized Wi-Fi module\r\n");
+		int32_t joined_connection;
 
-		if (ssid[0] != '\0') {
-			WPL_AddNetwork(ssid, password, WIFI_NETWORK_LABEL);
-			WPL_Join(WIFI_NETWORK_LABEL);
-			PRINTF("[i] Joined Wi-Fi \r\n");
-
-			PRINTF("[i] Before mqtt thread \r\n");
-			mqtt_freertos_run_thread(netif_default);
-
-			vTaskDelete(NULL);
+		result = WPL_AddNetwork(ssid, password, WIFI_NETWORK_LABEL);
+		if (result == WPLRET_SUCCESS)
+		{
+			PRINTF("Connecting as client to ssid: %s with password %s\r\n", ssid, password);
+			result = WPL_Join(WIFI_NETWORK_LABEL);
 		}
+
+		if (result != WPLRET_SUCCESS)
+		{
+			PRINTF("[!] Cannot connect to Wi-Fi\r\n[!]ssid: %s\r\n[!]passphrase: %s\r\n", ssid, password);
+
+			while (1)
+			{
+				__BKPT(0);
+			}
+		}
+		else
+		{
+			PRINTF("[i] Connected to Wi-Fi\r\nssid: %s\r\n[!]passphrase: %s\r\n", ssid, password);
+			char ip[16];
+			WPL_GetIP(ip, 1);
+		}
+
+		/*char ip[16];
+		while (netif_default == NULL || ip4_addr_isany_val(*netif_ip4_addr(netif_default))) {
+		    PRINTF("[DBG] Waiting for DHCP to assign IP...\r\n");
+		    vTaskDelay(pdMS_TO_TICKS(500));
+		}
+		PRINTF("[DBG] DHCP assigned IP: %s\r\n",
+		       ip4addr_ntoa(netif_ip4_addr(netif_default)));
+
+		PRINTF("[DBG] Got IP: %s\r\n", ip);
+
+		ip4_addr_t dns;
+		IP4_ADDR(&dns, 8,8,8,8);
+
+		if (ip4_addr_isany_val(*ip_2_ip4(dns_getserver(0)))) {
+			dns_setserver(0, (const ip_addr_t *)&dns);
+			PRINTF("[DBG] DNS set to 8.8.8.8\r\n");
+		}*/
+
+		if (netif_default == NULL) {
+		    PRINTF("[!] netif_default is NULL. Waiting for lwIP to initialize.\r\n");
+		    vTaskDelay(pdMS_TO_TICKS(500));
+		}
+		UNLOCK_TCPIP_CORE();
+
+		mqtt_freertos_run_thread(netif_default);
+
+		vTaskDelete(NULL);
+
 	} else {
 		/* Initialize Wi-Fi board */
 		PRINTF("[i] Initializing Wi-Fi connection... \r\n");
@@ -515,7 +556,7 @@ int main(void)
     BOARD_InitHardware();
 
     /* Create the main Task */
-    if (xTaskCreate(flash_task, "main_task", 2048, NULL, configMAX_PRIORITIES - 4, &g_BoardState.mainTask) != pdPASS)
+    if (xTaskCreate(flash_task, "main_task", 2048, NULL, configMAX_PRIORITIES - 4, NULL) != pdPASS)
     {
         PRINTF("[!] MAIN Task creation failed!\r\n");
         while (1)

@@ -14,7 +14,7 @@
 
 #include "board.h"
 #include "fsl_silicon_id.h"
-
+#include "lwip/dns.h"
 #include "lwip/opt.h"
 #include "lwip/api.h"
 #include "lwip/apps/mqtt.h"
@@ -28,7 +28,7 @@
 
 /*! @brief MQTT server host name or IP address. */
 #ifndef EXAMPLE_MQTT_SERVER_HOST
-#define EXAMPLE_MQTT_SERVER_HOST "test.mosquitto.org"
+#define EXAMPLE_MQTT_SERVER_HOST "85.119.83.194"
 #endif
 
 /*! @brief MQTT server port number. */
@@ -293,6 +293,14 @@ static void app_thread(void *arg)
      * Could just call netconn_gethostbyname() on both IP address or host name,
      * but we want to print some info if goint to resolve it.
      */
+
+    PRINTF("[DBG] Starting MQTT connection thread...\r\n");
+	PRINTF("[DBG] Server configured: %s:%d\r\n", EXAMPLE_MQTT_SERVER_HOST, EXAMPLE_MQTT_SERVER_PORT);
+	PRINTF("[DBG] Network info: IP=%s, GW=%s, DNS=%s\r\n",
+		   ipaddr_ntoa(&netif->ip_addr),
+		   ipaddr_ntoa(&netif->gw),
+		   ipaddr_ntoa(dns_getserver(0)));
+
     if (ipaddr_aton(EXAMPLE_MQTT_SERVER_HOST, &mqtt_addr) && IP_IS_V4(&mqtt_addr))
     {
         /* Already an IP address */
