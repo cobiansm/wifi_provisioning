@@ -14,11 +14,13 @@
 
 #include "board.h"
 #include "fsl_silicon_id.h"
-#include "lwip/dns.h"
+
 #include "lwip/opt.h"
 #include "lwip/api.h"
 #include "lwip/apps/mqtt.h"
 #include "lwip/tcpip.h"
+
+
 
 // FIXME cleanup
 
@@ -28,7 +30,7 @@
 
 /*! @brief MQTT server host name or IP address. */
 #ifndef EXAMPLE_MQTT_SERVER_HOST
-#define EXAMPLE_MQTT_SERVER_HOST "85.119.83.194"
+#define EXAMPLE_MQTT_SERVER_HOST "test.mosquitto.org"
 #endif
 
 /*! @brief MQTT server port number. */
@@ -85,10 +87,65 @@ static ip_addr_t mqtt_addr;
 
 /*! @brief Indicates connection to MQTT broker. */
 static volatile bool connected = false;
+uint8_t *to_publish;
+
+typedef enum {
+	laser_slider,
+	bumper_button,
+	mode_selector,
+    //insert new topics, and change current ones
+    TOPIC_COUNT
+} topic_index_t;
+
+
+//struct to relate enum(int) and topic name(cjar)
+// topics to subscribe
+static const struct {
+    const char *topic_name;
+    topic_index_t index;
+}subscriber_map[] = {
+		{"/laser_slider/data/value" ,  laser_slider},
+//		{"/bumper_button/pressed/value", bumper_button},
+		{"/mode_selector/driving_mode/value", mode_selector}
+};
+
+static const struct
+{
+    const char *topic_name;
+    topic_index_t index;
+}publisher_map[] ={
+		{"/core/sensor_laser/data/value", laser_slider},
+		{"/core/sensor_bumper/data", bumper_button},
+		{"/low-level/battery/data/percentage", mode_selector},
+//		{NULL, TOPIC_COUNT}
+		};
+
+
+
+
+Topic_Flags topic_status;
+uint32_t port_state;
 
 /*******************************************************************************
  * Code
  ******************************************************************************/
+
+
+void APP_GPIO_INTA_IRQHandler(void)
+{
+	static uint8_t counter = 0;
+
+	counter++;
+	if (counter & 1)
+		topic_status.topics.bumper = 1;
+
+	else
+		topic_status.topics.release = 1;
+
+	 GPIO_PinClearInterruptFlag(GPIO, APP_SW_PORT, APP_SW_PIN, 0);
+}
+
+
 
 /*!
  * @brief Called when subscription request finishes.
@@ -113,8 +170,13 @@ static void mqtt_topic_subscribed_cb(void *arg, err_t err)
 static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len)
 {
     LWIP_UNUSED_ARG(arg);
+    if (strcmp( topic, subscriber_map[laser_slider].topic_name) == 0)
+    	topic_status.topics.laser_slider = 1;
+    else if (strcmp( topic, subscriber_map[mode_selector].topic_name) == 0)
+        topic_status.topics.mode_selector = 1;
 
-    PRINTF("Received %u bytes from the topic \"%s\": \"", tot_len, topic);
+
+    PRINTF("Received %u bytes from the topic: \"%s\" \r\n", tot_len, topic);
 }
 
 /*!
@@ -125,23 +187,10 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
     int i;
 
     LWIP_UNUSED_ARG(arg);
+    to_publish = (uint8_t *)malloc(sizeof(uint8_t) * strlen(data) );
+    memcpy( to_publish, data, strlen(data) );
 
-    for (i = 0; i < len; i++)
-    {
-        if (isprint(data[i]))
-        {
-            PRINTF("%c", (char)data[i]);
-        }
-        else
-        {
-            PRINTF("\\x%02x", data[i]);
-        }
-    }
 
-    if (flags & MQTT_DATA_FLAG_LAST)
-    {
-        PRINTF("\"\r\n");
-    }
 }
 
 /*!
@@ -157,17 +206,19 @@ static void mqtt_subscribe_topics(mqtt_client_t *client)
     mqtt_set_inpub_callback(client, mqtt_incoming_publish_cb, mqtt_incoming_data_cb,
                             LWIP_CONST_CAST(void *, &mqtt_client_info));
 
-    for (i = 0; i < ARRAY_SIZE(topics); i++)
-    {
-        err = mqtt_subscribe(client, topics[i], qos[i], mqtt_topic_subscribed_cb, LWIP_CONST_CAST(void *, topics[i]));
-
+    for (i = 0; i < ARRAY_SIZE(subscriber_map); i++)
+       {
+           err = mqtt_subscribe(client,
+           					subscriber_map[i].topic_name,
+   							qos[i], mqtt_topic_subscribed_cb,
+   							LWIP_CONST_CAST(void *, subscriber_map[i].topic_name));
         if (err == ERR_OK)
         {
-            PRINTF("Subscribing to the topic \"%s\" with QoS %d...\r\n", topics[i], qos[i]);
+            PRINTF("Subscribing to the topic \"%s\" with QoS %d...\r\n", subscriber_map[i].topic_name , qos[i]);
         }
         else
         {
-            PRINTF("Failed to subscribe to the topic \"%s\" with QoS %d: %d.\r\n", topics[i], qos[i], err);
+            PRINTF("Failed to subscribe to the topic \"%s\" with QoS %d: %d.\r\n", subscriber_map[i].topic_name, qos[i], err);
         }
     }
 }
@@ -238,9 +289,9 @@ static void disconnect_from_mqtt(void *ctx)
 {
     LWIP_UNUSED_ARG(ctx);
 
-    mqtt_disconnect(mqtt_client);
-    connected = false;
-    PRINTF("Disconnected from MQTT broker.\r\n");
+  //  mqtt_disconnect(mqtt_client);
+  //  connected = false;
+  //  PRINTF("Disconnected from MQTT broker.\r\n");
 }
 
 /*!
@@ -253,6 +304,7 @@ static void mqtt_message_published_cb(void *arg, err_t err)
     if (err == ERR_OK)
     {
         PRINTF("Published to the topic \"%s\".\r\n", topic);
+        topic_status.All_Flags = 0;
     }
     else
     {
@@ -265,14 +317,46 @@ static void mqtt_message_published_cb(void *arg, err_t err)
  */
 static void publish_message(void *ctx)
 {
-    static const char *topic   = "lwip_topic/100";
-    static const char *message = "message from board";
+    static const char *topic;
+    if (topic_status.topics.laser_slider)
+    {
+    	topic_status.topics.laser_slider = 0;
+       	topic = publisher_map[laser_slider].topic_name;
+        PRINTF("Going to publish to the topic \"%s\"...\r\n", topic);
+        mqtt_publish(mqtt_client, topic, to_publish, strlen(to_publish), 1, 0, mqtt_message_published_cb, (void *)topic);
+    }
+     else if ( topic_status.topics.mode_selector)
+       	{
+       		topic_status.topics.mode_selector = 0;
+       		topic = publisher_map[mode_selector].topic_name;
+       		PRINTF("Going to publish to the topic \"%s\"...\r\n", topic);
+       		mqtt_publish(mqtt_client, topic, to_publish, strlen(to_publish), 1, 0, mqtt_message_published_cb, (void *)topic);
+       	} else if ( topic_status.topics.bumper)
+       	{
+       		topic_status.topics.bumper =0;
+       		topic = publisher_map[bumper_button].topic_name;
+       		char bumper_msg[]={"Bumper"};
+       		memcpy(to_publish, bumper_msg, strlen(bumper_msg));
+       		PRINTF("Going to publish to the topic \"%s\"...\r\n", topic);
+       		mqtt_publish(mqtt_client, topic, to_publish, strlen(to_publish), 1, 0, mqtt_message_published_cb, (void *)topic);
+       	} else if ( topic_status.topics.release)
+       	{
+       		topic_status.topics.release =0;
+       		char bumper_msg[]={"Release"};
+       		memcpy(to_publish, bumper_msg, strlen(bumper_msg));
+       		topic = publisher_map[bumper_button].topic_name;
+       		PRINTF("Going to publish to the topic \"%s\"...\r\n", topic);
+       		mqtt_publish(mqtt_client, topic, to_publish, strlen(to_publish), 1, 0, mqtt_message_published_cb, (void *)topic);
+
+       	}
+
+
+
 
     LWIP_UNUSED_ARG(ctx);
 
-    PRINTF("Going to publish to the topic \"%s\"...\r\n", topic);
 
-    mqtt_publish(mqtt_client, topic, message, strlen(message), 1, 0, mqtt_message_published_cb, (void *)topic);
+    free(to_publish);
 }
 
 /*!
@@ -288,19 +372,14 @@ static void app_thread(void *arg)
     PRINTF("IPv4 Subnet mask : %s\r\n", ipaddr_ntoa(&netif->netmask));
     PRINTF("IPv4 Gateway     : %s\r\n\r\n", ipaddr_ntoa(&netif->gw));
 
+
+
+
     /*
      * Check if we have an IP address or host name string configured.
      * Could just call netconn_gethostbyname() on both IP address or host name,
      * but we want to print some info if goint to resolve it.
      */
-
-    PRINTF("[DBG] Starting MQTT connection thread...\r\n");
-	PRINTF("[DBG] Server configured: %s:%d\r\n", EXAMPLE_MQTT_SERVER_HOST, EXAMPLE_MQTT_SERVER_PORT);
-	PRINTF("[DBG] Network info: IP=%s, GW=%s, DNS=%s\r\n",
-		   ipaddr_ntoa(&netif->ip_addr),
-		   ipaddr_ntoa(&netif->gw),
-		   ipaddr_ntoa(dns_getserver(0)));
-
     if (ipaddr_aton(EXAMPLE_MQTT_SERVER_HOST, &mqtt_addr) && IP_IS_V4(&mqtt_addr))
     {
         /* Already an IP address */

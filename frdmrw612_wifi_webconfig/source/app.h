@@ -11,7 +11,14 @@
  * Definitions
  ******************************************************************************/
 /*${macro:start}*/
-
+#define APP_BOARD_TEST_LED_PORT BOARD_LED_BLUE_GPIO_PORT
+#define APP_BOARD_TEST_LED_PIN  BOARD_LED_BLUE_GPIO_PIN
+#define APP_SW_PORT              BOARD_SW2_GPIO_PORT
+#define APP_SW_PIN               BOARD_SW2_GPIO_PIN
+#define APP_GPIO_INTA_IRQHandler GPIO_INTA_DriverIRQHandler
+#define APP_SW_IRQ               GPIO_INTA_IRQn
+#define APP_SW_CONNECTED_LEVEL   0U
+#define APP_SW_NAME              "SW2"
 /*${macro:end}*/
 
 /*******************************************************************************
